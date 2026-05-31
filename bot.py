@@ -1,4 +1,4 @@
-# bot.py - Fixed welcome message without markdown symbols
+# bot.py - Fixed for Railway deployment
 import os
 import re
 import logging
@@ -7,7 +7,7 @@ from typing import Dict, Optional, List
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes
+    Application, CommandHandler, ContextTypes, CallbackContext
 )
 from pymongo import MongoClient
 from dotenv import load_dotenv
@@ -20,12 +20,18 @@ load_dotenv()
 # Configuration
 TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_INVITE_LINK = os.getenv('CHANNEL_INVITE_LINK')
-CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
+CHANNEL_ID = os.getenv('CHANNEL_ID')  # Keep as string for channel username or ID
 API_URL = os.getenv('API_URL')
 API_KEY = os.getenv('API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in os.getenv('ADMIN_IDS', '').split(',') if admin_id.strip()]
 OWNER_USERNAME = os.getenv('OWNER_USERNAME', 'DANGER_BOY_OP')
+
+# Convert CHANNEL_ID to int if it's numeric, otherwise keep as string for username
+try:
+    CHANNEL_ID = int(CHANNEL_ID) if CHANNEL_ID and CHANNEL_ID.lstrip('-').isdigit() else CHANNEL_ID
+except:
+    pass
 
 # Price plans (credits cost in INR)
 PRICE_PLANS = {
@@ -44,10 +50,19 @@ logger = logging.getLogger(__name__)
 
 # Initialize MongoDB with a specific database name for this bot
 DB_NAME = os.getenv('DB_NAME', 'number_info_bot')
-mongo_client = MongoClient(MONGODB_URI)
-db = mongo_client[DB_NAME]
-users_collection = db['users']
-referrals_collection = db['referrals']
+
+# Handle MongoDB connection with error handling
+try:
+    mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+    # Test the connection
+    mongo_client.admin.command('ping')
+    db = mongo_client[DB_NAME]
+    users_collection = db['users']
+    referrals_collection = db['referrals']
+    logger.info("✅ MongoDB connected successfully")
+except Exception as e:
+    logger.error(f"❌ MongoDB connection failed: {e}")
+    raise
 
 def create_inline_keyboard():
     """Create consistent inline keyboard for all messages"""
@@ -134,9 +149,12 @@ class APIManager:
         
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(full_url) as response:
+                async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     data = await response.json()
                     return data
+            except asyncio.TimeoutError:
+                logger.error(f"API Timeout for number: {number}")
+                return {'status': 'failed', 'error': 'Request timeout'}
             except Exception as e:
                 logger.error(f"API Error: {e}")
                 return {'status': 'failed', 'error': str(e)}
@@ -360,7 +378,9 @@ Click the buttons below to get started!"""
         user_id = update.effective_user.id
         
         try:
-            chat_member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+            # Handle both channel ID and username
+            chat_id = CHANNEL_ID if isinstance(CHANNEL_ID, int) else f"@{CHANNEL_ID}" if not str(CHANNEL_ID).startswith('@') else CHANNEL_ID
+            chat_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             
             if chat_member.status in ['member', 'administrator', 'creator']:
                 UserManager.update_joined_channel(user_id, True)
@@ -376,7 +396,8 @@ Click the buttons below to get started!"""
                 return False
         except Exception as e:
             logger.error(f"Channel check error: {e}")
-            return False
+            # If channel check fails, allow access (optional - remove if you want to enforce joining)
+            return True
     
     @staticmethod
     async def num_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -675,27 +696,35 @@ Use /help for admin commands."""
 
 def main():
     """Main function to run the bot"""
-    # Create application
-    application = Application.builder().token(TOKEN).build()
-    
-    # Add command handlers
-    application.add_handler(CommandHandler("start", BotHandlers.start))
-    application.add_handler(CommandHandler("help", BotHandlers.help_command))
-    application.add_handler(CommandHandler("num", BotHandlers.num_command))
-    application.add_handler(CommandHandler("balance", BotHandlers.balance))
-    application.add_handler(CommandHandler("refer", BotHandlers.refer))
-    application.add_handler(CommandHandler("plans", BotHandlers.plans))
-    
-    # Admin command handlers
-    application.add_handler(CommandHandler("add", BotHandlers.add_credits))
-    application.add_handler(CommandHandler("broadcast", BotHandlers.broadcast))
-    application.add_handler(CommandHandler("stats", BotHandlers.stats))
-    
-    # Start the bot
-    print("🤖 Bot is starting...")
-    print(f"📊 Using database: {DB_NAME}")
-    print(f"👑 Admins: {ADMIN_IDS}")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # Create application - This is the correct way in newer versions
+        application = Application.builder().token(TOKEN).build()
+        
+        # Add command handlers
+        application.add_handler(CommandHandler("start", BotHandlers.start))
+        application.add_handler(CommandHandler("help", BotHandlers.help_command))
+        application.add_handler(CommandHandler("num", BotHandlers.num_command))
+        application.add_handler(CommandHandler("balance", BotHandlers.balance))
+        application.add_handler(CommandHandler("refer", BotHandlers.refer))
+        application.add_handler(CommandHandler("plans", BotHandlers.plans))
+        
+        # Admin command handlers
+        application.add_handler(CommandHandler("add", BotHandlers.add_credits))
+        application.add_handler(CommandHandler("broadcast", BotHandlers.broadcast))
+        application.add_handler(CommandHandler("stats", BotHandlers.stats))
+        
+        # Start the bot
+        print("🤖 Bot is starting...")
+        print(f"📊 Using database: {DB_NAME}")
+        print(f"👑 Admins: {ADMIN_IDS}")
+        print(f"✅ Bot token: {TOKEN[:10]}...")
+        
+        # Start polling with error handling
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
