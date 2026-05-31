@@ -83,7 +83,7 @@ python bot.py
 * Select "Deploy from GitHub Repo".
 * Choose your repository.
 
-### 3. Add Variables
+### 2. Add Variables
 
 In Railway Dashboard:
 
@@ -93,7 +93,7 @@ Project → Variables
 
 Add all variables from your `.env` file.
 
-### 4. Start Command
+### 3. Start Command
 
 ```bash
 python bot.py
